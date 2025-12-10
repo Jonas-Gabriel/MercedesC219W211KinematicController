@@ -14,201 +14,46 @@ enum DriveDirections : uint8_t
     OPEN = 1
 };
 
-static DriveDirections CurrentDriveDirection = DriveDirections::CLOSE;
-static bool isDriving = false;
-static unsigned long DriveStartTime = 0;
-
-
-
-// the setup function runs once when you press reset or power the board
-void setup() 
+enum MotorSMStates : uint8_t
 {
-    pinMode(PIN_INH, OUTPUT);
-    pinMode(PIN_IN1, OUTPUT);
-    pinMode(PIN_IN2, OUTPUT);
-    pinMode(INPUT_START_BUTTON, INPUT_PULLUP);
-    pinMode(INPUT_END_BUTTON, INPUT);
-    pinMode(PIN_ERR, INPUT);
+    BOOT,
+    BOOT_RECOVERY_CHECK,
+    BOOT_RECOVER,
+    BOOT_END,
+    IDLE,
+    DRIVE_START,
+    DRIVE_ACTIVE,
+    DRIVE_END
+};
 
-    DriveStop();
-    LoadDriveDirectionFromEEPROM();
-}
+// ==========================================================
+// State Variables
+// ==========================================================
+static MotorSMStates MotorSMState = MotorSMStates::BOOT;
 
-// the loop function runs over and over again until power down or reset
-void loop() 
-{
-    static bool doOnce = false;
+static DriveDirections desiredDirection = DriveDirections::CLOSE;
+static DriveDirections lastKnownDirection = DriveDirections:: CLOSE;  // stored in EEPROM
 
-    // STOP: DO NOT CONTINUE while IC is in ERR STATE;
-    while (TLE4207_Error())
-    {
-        DriveStop();
-        delay(WATCHDOG_RELIEVE_TLE4207_ERR_STATE);
-    }
+static unsigned long stateStartTime = 0;
+static unsigned long driveStartTime = 0;
 
-    if (!doOnce)
-    {
-        if (SHOULD_RECOVER_AT_BOOT == 1 && !EndReached())
-        {
+static bool endPressedAtStart = false;
+static bool endReleasedOnce = false;
 
-            if (SHOULD_RECOVER_TO_CLOSE_AT_BOOT == 1)
-            {
-                SetDesiredDriveDirection(DriveDirections::CLOSE);
-            }
-
-            AttemptDrive();
-        }
-
-        doOnce = true;
-    }
-
-    if (CanAttemptNewDrive())
-    {
-        AttemptDrive();
-    }
-}
-
-bool AttemptDrive()
-{
-    if (isDriving)
-    {
-        // for some reason isDriving is set to true, abort;
-        DriveStop();
-        return false;
-    }
-
-    // ---------------------------------------------------------------------
-    // End-switch handling:
-    // If the button is already pressed at start, we ignore that state
-    // until we have seen it RELEASED once.
-    // ---------------------------------------------------------------------
-    bool wasEndButtonPressedAtBeginning = EndReached();
-    bool LogicalEndDependsOnEndButtonReleased = wasEndButtonPressedAtBeginning;
-
-    bool reachedLogicalEnd = false; // only when the button is pressed we reach the end. the end however should not be considered as true if the button is already pressed at start 
-    int AttemptsBeforeSafteyStop = 1;
-
-    LogTimeAndDriveMotor();
-
-    while (isDriving && !reachedLogicalEnd)
-    {
-        if (TLE4207_Error())
-        {
-            DriveStop();
-            return false;
-        }
-
-        if (wasEndButtonPressedAtBeginning) 
-        {
-            if (!EndReached() && END_BUTTON_RELEASED_TIMER_BEFORE_CONSIDER_SUCCESS) 
-            {
-                LogicalEndDependsOnEndButtonReleased = false;
-            }
-            else if (ShouldConsiderDriveAttemptSuccessOnLockedButton()) 
-            {
-                DriveStop();
-                reachedLogicalEnd = true;
-                break;
-            }
-        }
-        else if(EndReached() && !LogicalEndDependsOnEndButtonReleased)
-        {
-                DriveStop();
-                reachedLogicalEnd = true;
-                break;
-        }
-        // -----------------------------------------------------------------
-        // OVERTIME LOGIC - if the drive can not reach its desired end at given time, reverse drive direction and try to reach other end, inverse as many times as given
-        // -----------------------------------------------------------------
-
-        if (GetDriveTimeOut() && MAX_TRYS_BEFORE_SAFETY_STOP > 1) 
-        {
-            if (AttemptsBeforeSafteyStop < MAX_TRYS_BEFORE_SAFETY_STOP)
-            {
-                AttemptsBeforeSafteyStop++;
-                SwitchDriveDirection();
-                LogTimeAndDriveMotor();
-            }
-            else
-            {
-                DriveStop();
-                return false;
-            }
-        }
-    }
-
-    if (reachedLogicalEnd)
-    {
-        return true;
-    }
-    else
-    {
-        return false;
-    }
-}
-
-
-// ---------------------------------------------------------------------------
-// STATE HELPERS
-// ---------------------------------------------------------------------------
-
-void SetDriveStatus(bool bNewDriveStatus)
-{
-    isDriving = bNewDriveStatus;
-}
-
-void LogTimeAndDriveMotor()
-{
-    DriveStartTime = millis();
-    (CurrentDriveDirection == CLOSE) ? DriveClose() : DriveOpen();   // starts driving in new direction
-}
-
-// ---------------------------------------------------------------------------
-// DIRECTION CONTROL
-// ---------------------------------------------------------------------------
-
-void SwitchDriveDirection()
-{
-    (CurrentDriveDirection == CLOSE) 
-        ? SetDesiredDriveDirection(DriveDirections::OPEN)
-        : SetDesiredDriveDirection(DriveDirections::CLOSE);
-}
-
-void SetDesiredDriveDirection(DriveDirections NewDriveDirection)
-{
-    CurrentDriveDirection = NewDriveDirection;
-
-    SaveDriveDirectionToEEPROM();
-}
-
-// ---------------------------------------------------------------------------
-// TIMEOUT LOGIC � millis() rollover-safe
-// ---------------------------------------------------------------------------
-
-bool GetDriveTimeOut()
-{
-    unsigned long allowedTime = MAX_DRIVE_TIMEOUT;
-
-    return (millis() - DriveStartTime) > allowedTime;
-}
-
-bool ShouldConsiderDriveAttemptSuccessOnLockedButton()
-{
-    return (millis() - DriveStartTime) > END_BUTTON_LOCKTIME_CONSIDER_SUCCESS;
-}
+static uint8_t retryCount = 1;
 
 // ---------------------------------------------------------------------------
 // EEPROM SAVE/LOAD
 // ---------------------------------------------------------------------------
 
-void SaveDriveDirectionToEEPROM()
+void SaveDriveDirectionToEEPROM(DriveDirections DirectionToSave)
 {
-    EEPROMBitAccess::writeBit(ADDRESS_LastDriveDirection, ADDRESS_BIT_LastDriveDirection, CurrentDriveDirection);
+    EEPROMBitAccess::writeBit(ADDRESS_LastDriveDirection, ADDRESS_BIT_LastDriveDirection, DirectionToSave);
 }
 
-void LoadDriveDirectionFromEEPROM()
+DriveDirections LoadDriveDirectionFromEEPROM()
 {
-    CurrentDriveDirection = 
+    return
         EEPROMBitAccess::readBit(ADDRESS_LastDriveDirection, ADDRESS_BIT_LastDriveDirection) == 1
         ? DriveDirections::OPEN
         : DriveDirections::CLOSE;
@@ -218,76 +63,230 @@ void LoadDriveDirectionFromEEPROM()
 // MOTOR CONTROL
 // ---------------------------------------------------------------------------
 
-void DriveClose()
+void MotorDrive(DriveDirections DesiredDirection)
 {
-    SetDriveStatus(true);
+    if (DesiredDirection == CLOSE)
+    {
+        digitalWrite(PIN_IN1, HIGH);
+        digitalWrite(PIN_IN2, LOW);
+    }
+    else
+    {
+        digitalWrite(PIN_IN1, LOW);
+        digitalWrite(PIN_IN2, HIGH);
+    }
 
-    digitalWrite(PIN_IN1, HIGH);
-    digitalWrite(PIN_IN2, LOW);
     digitalWrite(PIN_INH, HIGH);
 }
 
-void DriveOpen()
-{
-    SetDriveStatus(true);
-
-    digitalWrite(PIN_IN1, LOW);
-    digitalWrite(PIN_IN2, HIGH);
-    digitalWrite(PIN_INH, HIGH);
-}
-
-void DriveStop()
+void MotorStop()
 {
     digitalWrite(PIN_IN1, LOW);
     digitalWrite(PIN_IN2, LOW);
     digitalWrite(PIN_INH, LOW);
-
-    SetDriveStatus(false);
 }
 
 // ---------------------------------------------------------------------------
 // SIGNALS
 // ---------------------------------------------------------------------------
 
-bool TLE4207_Error()
-{
-    return false;
-    // inverse as LOW is OK!
-    return !digitalRead(PIN_ERR);
-}
-
 bool StartButtonPressed()
 {
-    return !digitalRead(INPUT_START_BUTTON);
+    return !digitalRead(INPUT_START_BUTTON);  // Active LOW
 }
 
-bool EndReached()
+bool EndButtonPressed()
 {
-    // inverse as LOW is PRESSED!
-    return !digitalRead(INPUT_END_BUTTON);
+    return !digitalRead(INPUT_END_BUTTON);  // Active LOW
 }
 
 // ---------------------------------------------------------------------------
-// INPUT CONTROL � FIXED: button release timeout
+// SETUP
 // ---------------------------------------------------------------------------
 
-bool CanAttemptNewDrive()
+// the setup function runs once when you press reset or power the board
+void setup()
 {
-    if (!isDriving && StartButtonPressed())
+    Serial.begin(115200);
+
+    pinMode(PIN_INH, OUTPUT);
+    pinMode(PIN_IN1, OUTPUT);
+    pinMode(PIN_IN2, OUTPUT);
+    pinMode(INPUT_START_BUTTON, INPUT_PULLUP);
+    pinMode(INPUT_END_BUTTON, INPUT);
+    pinMode(PIN_ERR, INPUT);
+
+    MotorStop();
+    lastKnownDirection = LoadDriveDirectionFromEEPROM();
+
+    changeState(MotorSMStates::BOOT);
+}
+
+// ---------------------------------------------------------------------------
+// STATE MACHINE
+// ---------------------------------------------------------------------------
+
+void changeState(MotorSMStates newState)
+{
+    MotorSMState = newState;
+    stateStartTime = millis();
+}
+
+void SwitchDesiredDirection()
+{
+    desiredDirection = (desiredDirection == DriveDirections::CLOSE)
+        ? DriveDirections::OPEN
+        : DriveDirections::CLOSE;
+}
+
+// the loop function runs over and over again until power down or reset
+void loop()
+{
+    switch (MotorSMState)
     {
-        unsigned long button_pressed_time = millis();
-        while (StartButtonPressed())
-        {
-            if (millis() - button_pressed_time > StartButtonDeadlockRelease)
+        case BOOT:
+            if (SHOULD_RECOVER_AT_BOOT == 1)
             {
+                changeState(MotorSMStates::BOOT_RECOVERY_CHECK);
+            }
+            else
+            {
+                changeState(MotorSMStates::BOOT_END);
+            }
+            break;
+
+        case BOOT_RECOVERY_CHECK:
+            Serial.println("CHECK RECOVER AT BOOT");
+            if (EndButtonPressed())
+            {
+                desiredDirection = lastKnownDirection;
+                changeState(MotorSMStates::BOOT_END);
+            }
+            else
+            {
+                // Unknown Position of Motor -> Recovery needed
+                (SHOULD_RECOVER_TO_CLOSE_AT_BOOT == 1)
+                    ? desiredDirection = DriveDirections::CLOSE
+                    : desiredDirection = lastKnownDirection;
+
+                changeState(MotorSMStates::BOOT_RECOVER);
+            }
+            break;
+
+        case BOOT_RECOVER:
+            Serial.println("RECOVERY");
+
+            retryCount = MAX_TRYS_BEFORE_SAFETY_STOP;
+            endPressedAtStart = EndButtonPressed();
+            endReleasedOnce = !endPressedAtStart;
+            MotorDrive(desiredDirection);
+            driveStartTime = millis();
+
+            // same as DRIVE_START but simpler for boot recovery
+            changeState(MotorSMStates::DRIVE_ACTIVE);
+            break;
+
+        case BOOT_END:
+            // At a known end -> IDLE
+            Serial.println("ENDING BOOT");
+            changeState(MotorSMStates::IDLE);
+            break;
+
+        case IDLE:
+            if (StartButtonPressed())
+            {
+                Serial.println("START WAS PRESSED");
+                changeState(MotorSMStates::DRIVE_START);
+            }
+            break;
+
+        case DRIVE_START:
+            Serial.println("STARTED DRIVE");
+
+            retryCount = 1;
+            endPressedAtStart = EndButtonPressed();
+            endReleasedOnce = !endPressedAtStart;
+            MotorDrive(desiredDirection);
+            driveStartTime = millis();
+
+
+            changeState(MotorSMStates::DRIVE_ACTIVE);
+            break;
+
+        case DRIVE_ACTIVE:
+        {
+            unsigned long now = millis();
+
+            bool endNow = EndButtonPressed();
+
+            // 1. Release EndButton Detection
+            if (endPressedAtStart)
+            {
+                if (!endNow)
+                {
+                    Serial.println("END_BUTTON RELEASED");
+                    endReleasedOnce = true;
+                    endPressedAtStart = false;
+                    delay(100);
+                }
+                else
+                {
+                    // Still Pressed -> check by END_BUTTON_RELEASE_TIMER_MS
+                    if (now - driveStartTime >= END_BUTTON_RELEASE_TIMER_MS)
+                    {
+                        Serial.println("END_BUTTON NOT RELEASED = CONSIDERING OK = LIMIT REACHED");
+                        // CONSIDER = Driving in direction where we are already at the limit
+                        changeState(MotorSMStates::DRIVE_END);
+                        SwitchDesiredDirection();
+                        SaveDriveDirectionToEEPROM(desiredDirection);
+                        break;
+                    }
+                }
+            }
+            // 2. END_BUTTON detection (after valid release or no release needed)
+            if (endReleasedOnce && endNow)
+            {
+                Serial.println("DRIVE SUCCEEDED");
+                changeState(MotorSMStates::DRIVE_END);
+                SwitchDesiredDirection();
+                SaveDriveDirectionToEEPROM(desiredDirection);
                 break;
+            }
+            // 3. TimeOut reached (Drive to end took to long, maybe blocked) -> Reverse Direction
+            if ((now - driveStartTime >= MAX_DRIVE_TIMEOUT_MS))
+            {
+                if ((MAX_TRYS_BEFORE_SAFETY_STOP > 1) && MAX_TRYS_BEFORE_SAFETY_STOP >= retryCount)
+                {
+                    Serial.println("OVERTIME HAPPENED -> REVERSING");
+                    SwitchDesiredDirection();
+
+                    MotorDrive(desiredDirection);
+                    driveStartTime = now;
+
+                    // reset end logic for fresh movement
+                    endPressedAtStart = EndButtonPressed(); // should be false;
+                    endReleasedOnce = !endPressedAtStart; // should be true;
+
+                    retryCount++;
+                }
+                else
+                {
+                    Serial.println("OVERTIME HAPPENED -> ABORTING");
+
+                    desiredDirection = DriveDirections::OPEN; // blockage, next motion will be open for visual inspection;
+                    changeState(MotorSMStates::DRIVE_END);
+                    break;
+                }
             }
         }
 
-        SwitchDriveDirection();
-        return true;
+        break;
+
+        case DRIVE_END:
+            Serial.println("DRIVE END");
+            MotorStop();
+            delay(DRIVE_COOLDOWN_MS);
+            changeState(MotorSMStates::IDLE);
+            break;
     }
-
-    return false;
 }
-
