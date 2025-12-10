@@ -120,21 +120,19 @@ bool AttemptDrive()
         // -----------------------------------------------------------------
         // OVERTIME LOGIC - if the drive can not reach its desired end at given time, reverse drive direction and try to reach other end, inverse as many times as given
         // -----------------------------------------------------------------
-        else
+
+        if (GetDriveTimeOut() && MAX_TRYS_BEFORE_SAFETY_STOP > 1) 
         {
-            if (GetDriveTimeOut() && MAX_TRYS_BEFORE_SAFETY_STOP > 1) 
+            if (AttemptsBeforeSafteyStop < MAX_TRYS_BEFORE_SAFETY_STOP)
             {
-                if (AttemptsBeforeSafteyStop < MAX_TRYS_BEFORE_SAFETY_STOP)
-                {
-                    AttemptsBeforeSafteyStop++;
-                    SwitchDriveDirection();
-                    LogTimeAndDriveMotor();
-                }
-                else
-                {
-                    DriveStop();
-                    return false;
-                }
+                AttemptsBeforeSafteyStop++;
+                SwitchDriveDirection();
+                LogTimeAndDriveMotor();
+            }
+            else
+            {
+                DriveStop();
+                return false;
             }
         }
     }
