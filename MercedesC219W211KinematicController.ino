@@ -247,6 +247,7 @@ void loop()
             if (endReleasedOnce && endNow)
             {
                 Serial.println("DRIVE SUCCEEDED");
+                delay(TEMP_FIX_LET_DRIVE_CLOSE_PROP_TIME);
                 changeState(MotorSMStates::DRIVE_END);
                 SwitchDesiredDirection();
                 SaveDriveDirectionToEEPROM(desiredDirection);
@@ -290,3 +291,4 @@ void loop()
             break;
     }
 }
+
