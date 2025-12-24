@@ -34,6 +34,8 @@
 #define END_BUTTON_RELEASE_TIMER_MS 500
 #define MAX_TRYS_BEFORE_SAFETY_STOP 2
 #define DRIVE_COOLDOWN_MS 50
+#define TEMP_FIX_LET_DRIVE_CLOSE_PROP_TIME 100
 
 // Timer to release button automatically
+
 #define StartButtonDeadlockRelease 1000
